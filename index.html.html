@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Path Tracker - Final</title>
+    <style>
+        body { background: #0f0f0f; color: #00ff96; font-family: 'Consolas', monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { display: flex; gap: 20px; background: #1a1a1a; padding: 20px; border-radius: 15px; box-shadow: 0 0 40px rgba(0,0,0,0.5); position: relative; }
+        canvas { border: 2px solid #333; background: #000; cursor: pointer; border-radius: 5px; }
+        
+        .panel { width: 280px; display: flex; flex-direction: column; gap: 15px; }
+        .card { background: #252525; padding: 15px; border-radius: 8px; border-left: 4px solid #00ff96; }
+        .card.alt { border-left-color: #ff007a; }
+        h2 { margin: 0 0 10px 0; font-size: 1.2em; color: #fff; }
+        .stat-item { display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 0.9em; }
+        .val { color: #fff; font-weight: bold; }
+        
+        .btn-group { display: flex; flex-direction: column; gap: 10px; }
+        button { 
+            padding: 12px; border: none; border-radius: 5px; 
+            color: #000; font-weight: bold; cursor: pointer; transition: 0.2s; font-family: inherit;
+        }
+        #toggleBtn { background: #00ff96; }
+        #toggleBtn.stop { background: #ff007a; color: #fff; }
+        #returnBtn { background: #3498db; color: #fff; } /* 처음으로 버튼 색상 */
+        #resetBtn { background: #444; color: #fff; }
+        button:hover { opacity: 0.8; transform: translateY(-2px); }
+
+        .fast-mode-container {
+            display: flex; align-items: center; justify-content: space-between;
+            background: #333; padding: 10px; border-radius: 5px; font-size: 0.9em;
+        }
+        .switch { position: relative; display: inline-block; width: 44px; height: 22px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 22px; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #ff007a; }
+        input:checked + .slider:before { transform: translateX(22px); }
+        
+        #errorMsg { color: #ff007a; font-size: 0.85em; font-weight: bold; text-align: center; min-height: 1.2em; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <canvas id="mazeCanvas"></canvas>
+
+    <div class="panel">
+        <div class="card">
+            <h2>AI MONITOR</h2>
+            <div class="stat-item">상태: <span id="status" class="val">준비 완료</span></div>
+            <div class="stat-item">현재 좌표: <span id="pos" class="val">-</span></div>
+            <div class="stat-item">남은 거리: <span id="dist" class="val">-</span></div>
+        </div>
+
+        <div class="fast-mode-container">
+            <span>⏩ 빨리감기 (0.1s)</span>
+            <label class="switch">
+                <input type="checkbox" id="fastModeToggle" onchange="updateSpeed()">
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <div class="card alt">
+            <h2>A* CALCULATION</h2>
+            <div id="f_val" style="font-size: 0.8em; color: #888;">
+                현재 비용 g: <span id="g_val" class="val">0</span><br>
+                남은 추정 h: <span id="h_val" class="val">0</span>
+            </div>
+        </div>
+
+        <div id="errorMsg"></div>
+
+        <div class="btn-group">
+            <button id="toggleBtn" onclick="toggleAI()">START AI</button>
+            <button id="returnBtn" onclick="returnToStart()">RETURN TO START</button>
+            <button id="resetBtn" onclick="fullReset()">NEW MAZE</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('mazeCanvas');
+const ctx = canvas.getContext('2d');
+const SIZE = 600, COLS = 20, ROWS = 20;
+const W = SIZE / COLS, H = SIZE / ROWS;
+
+canvas.width = SIZE; canvas.height = SIZE;
+
+let grid = [], aiNode, endNode, moveTimer = null;
+let isRunning = false, historyPath = [], smoothPos = { x: 0, y: 0 };
+
+class Node {
+    constructor(r, c) {
+        this.r = r; this.c = c;
+        this.isWall = Math.random() < 0.25;
+        this.neighbors = [];
+        this.f = 0; this.g = 0; this.h = 0; this.parent = undefined;
+    }
+    show() {
+        if (this.isWall) {
+            ctx.fillStyle = "#333";
+            ctx.fillRect(this.c * W + 2, this.r * H + 2, W - 4, H - 4);
+        }
+    }
+}
+
+function setup(newGrid = true) {
+    stopAI();
+    if (newGrid) {
+        grid = Array.from({ length: ROWS }, (_, r) => Array.from({ length: COLS }, (_, c) => new Node(r, c)));
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                let node = grid[r][c];
+                if (r < ROWS - 1) node.neighbors.push(grid[r + 1][c]);
+                if (r > 0) node.neighbors.push(grid[r - 1][c]);
+                if (c < COLS - 1) node.neighbors.push(grid[r][c + 1]);
+                if (c > 0) node.neighbors.push(grid[r][c - 1]);
+            }
+        }
+    }
+    aiNode = grid[0][0]; endNode = grid[ROWS - 1][COLS - 1];
+    aiNode.isWall = false; endNode.isWall = false;
+    
+    smoothPos = { x: aiNode.c * W + W/2, y: aiNode.r * H + H/2 };
+    historyPath = [{x: smoothPos.x, y: smoothPos.y}];
+    document.getElementById('errorMsg').innerText = "";
+    document.getElementById('status').innerText = "준비 완료";
+    updateUI();
+}
+
+function findPath(start, target) {
+    for(let row of grid) for(let node of row) { node.f = 0; node.g = 0; node.h = 0; node.parent = undefined; }
+    let openSet = [start], closedSet = [];
+    while (openSet.length > 0) {
+        let winner = 0;
+        for (let i = 0; i < openSet.length; i++) if (openSet[i].f < openSet[winner].f) winner = i;
+        let current = openSet[winner];
+        if (current === target) {
+            let tempPath = []; let temp = current;
+            while (temp.parent) { tempPath.push(temp); temp = temp.parent; }
+            return tempPath.reverse();
+        }
+        openSet.splice(winner, 1); closedSet.push(current);
+        for (let neighbor of current.neighbors) {
+            if (!closedSet.includes(neighbor) && !neighbor.isWall) {
+                let tempG = current.g + 1;
+                if (!openSet.includes(neighbor) || tempG < neighbor.g) {
+                    neighbor.g = tempG;
+                    neighbor.h = Math.abs(neighbor.r - target.r) + Math.abs(neighbor.c - target.c);
+                    neighbor.f = neighbor.g + neighbor.h;
+                    neighbor.parent = current;
+                    if (!openSet.includes(neighbor)) openSet.push(neighbor);
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function toggleAI() {
+    if (isRunning) stopAI();
+    else {
+        document.getElementById('fastModeToggle').checked = false;
+        startAI();
+    }
+}
+
+function updateSpeed() { if (isRunning) { stopAI(false); startAI(); } }
+
+function startAI() {
+    if (aiNode === endNode) return;
+    isRunning = true;
+    const btn = document.getElementById('toggleBtn');
+    btn.innerText = "STOP AI"; btn.classList.add('stop');
+    document.getElementById('status').innerText = "탐색 중...";
+    document.getElementById('errorMsg').innerText = "";
+    
+    const isFast = document.getElementById('fastModeToggle').checked;
+    const speed = isFast ? 100 : 300;
+
+    moveTimer = setInterval(() => {
+        if (aiNode === endNode) {
+            stopAI();
+            document.getElementById('status').innerText = "도착 완료!";
+            return;
+        }
+        let nextSteps = findPath(aiNode, endNode);
+        if (nextSteps) {
+            aiNode = nextSteps[0];
+            historyPath.push({x: aiNode.c * W + W/2, y: aiNode.r * H + H/2});
+            updateUI(nextSteps.length);
+        } else {
+            document.getElementById('errorMsg').innerText = "가로막힘: 경로가 없습니다!";
+            stopAI();
+        }
+    }, speed);
+}
+
+function stopAI(resetButton = true) {
+    isRunning = false;
+    if (moveTimer) clearInterval(moveTimer);
+    if (resetButton) {
+        const btn = document.getElementById('toggleBtn');
+        if (btn) { btn.innerText = "START AI"; btn.classList.remove('stop'); }
+    }
+}
+
+function returnToStart() {
+    setup(false); // 미로 유동성 유지하며 리셋
+}
+
+function updateUI(dist = "-") {
+    document.getElementById('pos').innerText = `${aiNode.r}, ${aiNode.c}`;
+    document.getElementById('dist').innerText = dist;
+    document.getElementById('g_val').innerText = aiNode.g;
+    document.getElementById('h_val').innerText = aiNode.h;
+}
+
+function draw() {
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) grid[r][c].show();
+
+    // 타겟 좌표 (현재 AI가 논리적으로 위치한 칸의 중심)
+    let targetX = aiNode.c * W + W/2;
+    let targetY = aiNode.r * H + H/2;
+
+    // 빨리감기 여부에 따라 따라오는 속도 조절
+    const isFast = document.getElementById('fastModeToggle').checked;
+    // 빨리감기일 땐 0.5(매우 빠름), 일반일 땐 0.15(부드러움)
+    const lerpFactor = isFast ? 0.5 : 0.15; 
+
+    // 부드러운 위치 업데이트
+    smoothPos.x += (targetX - smoothPos.x) * lerpFactor;
+    smoothPos.y += (targetY - smoothPos.y) * lerpFactor;
+
+    // --- 궤적 그리기 (휘어짐 및 튀어나옴 방지 핵심) ---
+    ctx.strokeStyle = "#00ff96"; 
+    ctx.lineWidth = 3; 
+    ctx.lineJoin = "round"; 
+    ctx.beginPath();
+    
+    ctx.moveTo(historyPath[0].x, historyPath[0].y);
+    
+    // 지나온 칸들까지만 선을 그림 (현재 aiNode 직전까지)
+    // historyPath의 마지막 요소는 항상 현재 aiNode의 위치이므로, 
+    // 마지막 직전까지만 선을 긋고 마지막은 smoothPos로 연결합니다.
+    for(let i = 1; i < historyPath.length - 1; i++) {
+        ctx.lineTo(historyPath[i].x, historyPath[i].y);
+    }
+    
+    // 마지막 선을 "부드럽게 움직이는 원의 중심"에 고정
+    // 이렇게 하면 궤적이 원보다 먼저 튀어나가는 일이 절대 발생하지 않습니다.
+    ctx.lineTo(smoothPos.x, smoothPos.y);
+    ctx.stroke();
+
+    // 목표지점
+    ctx.fillStyle = "#ff007a"; 
+    ctx.beginPath();
+    ctx.arc(endNode.c * W + W/2, endNode.r * H + H/2, W/4, 0, Math.PI*2); 
+    ctx.fill();
+
+    // AI 본체 (원)
+    ctx.fillStyle = "#00ff96"; 
+    ctx.shadowBlur = 15; 
+    ctx.shadowColor = "#00ff96";
+    ctx.beginPath(); 
+    ctx.arc(smoothPos.x, smoothPos.y, W/2.5, 0, Math.PI*2); 
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    requestAnimationFrame(draw);
+}
+
+function fullReset() { setup(true); }
+
+canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const c = Math.floor((e.clientX - rect.left) / W);
+    const r = Math.floor((e.clientY - rect.top) / H);
+    if (grid[r] && grid[r][c] && grid[r][c] !== endNode) {
+        grid[r][c].isWall = !grid[r][c].isWall;
+        setup(false); 
+    }
+});
+
+setup(); draw();
+</script>
+</body>
+</html>
